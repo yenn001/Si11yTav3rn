@@ -311,7 +311,7 @@ export function getGroupNames() {
  * @returns {number|Object} 0-based character ID or key-value object if full is true
  */
 export function findGroupMemberId(arg, full = false) {
-    arg = arg?.trim();
+    arg = arg?.toString()?.trim();
 
     if (!arg) {
         console.warn('WARN: No argument provided for findGroupMemberId');
@@ -436,7 +436,6 @@ export function getGroupDepthPrompts(groupId, characterId) {
  * @returns {{description: string, personality: string, scenario: string, mesExamples: string}} Group character cards combined
  */
 export function getGroupCharacterCards(groupId, characterId) {
-    console.debug('getGroupCharacterCards entered for group: ', groupId);
     const group = groups.find(x => x.id === groupId);
 
     if (!group || !group?.generation_mode || !Array.isArray(group.members) || !group.members.length) {
@@ -507,7 +506,6 @@ export function getGroupCharacterCards(groupId, characterId) {
         }
 
         if (group.disabled_members.includes(member) && characterId !== index && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
-            console.debug(`Skipping disabled group member: ${member}`);
             continue;
         }
 
@@ -923,7 +921,6 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
         for (const chId of activatedMembers) {
             throwIfAborted();
             deactivateSendButtons();
-            const generateType = type == 'swipe' || type == 'impersonate' || type == 'quiet' || type == 'continue' ? type : 'group_chat';
             setCharacterId(chId);
             setCharacterName(characters[chId].name);
             if (power_user.show_group_chat_queue) {
@@ -932,6 +929,7 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
             await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, chId);
 
             // Wait for generation to finish
+            const generateType = ['swipe', 'impersonate', 'quiet', 'continue'].includes(type) ? type : 'normal';
             textResult = await Generate(generateType, { automatic_trigger: by_auto_mode, ...(params || {}) });
             let messageChunk = textResult?.messageChunk;
 
@@ -1360,7 +1358,7 @@ function isGroupMember(group, avatarId) {
     }
 }
 
-function getGroupCharacters({ doFilter, onlyMembers } = {}) {
+function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
     function sortMembersFn(a, b) {
         const membersArray = thisGroup?.members ?? newGroupMembers;
         const aIndex = membersArray.indexOf(a.item.avatar);
@@ -1759,7 +1757,7 @@ async function onGroupActionClick(event) {
 
 function updateFavButtonState(state) {
     fav_grp_checked = state;
-    $('#rm_group_fav').val(fav_grp_checked);
+    $('#rm_group_fav').val(String(fav_grp_checked));
     $('#group_favorite_button').toggleClass('fav_on', fav_grp_checked);
     $('#group_favorite_button').toggleClass('fav_off', !fav_grp_checked);
 }
@@ -1968,6 +1966,51 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
     await editGroup(groupId, true, true);
 }
 
+/**
+ * Deletes a group chat by its name. Doesn't affect displayed chat.
+ * @param {string} groupId Group ID
+ * @param {string} chatName Name of the chat to delete
+ * @returns {Promise<void>}
+ */
+export async function deleteGroupChatByName(groupId, chatName) {
+    const group = groups.find(x => x.id === groupId);
+    if (!group || !group.chats.includes(chatName)) {
+        return;
+    }
+
+    if (typeof group.past_metadata !== 'object') {
+        group.past_metadata = {};
+    }
+
+    group.chats.splice(group.chats.indexOf(chatName), 1);
+    delete group.past_metadata[chatName];
+
+    const response = await fetch('/api/chats/group/delete', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id: chatName }),
+    });
+
+    if (!response.ok) {
+        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be deleted`);
+        console.error('Group chat could not be deleted');
+        return;
+    }
+
+    // If the deleted chat was the current chat, switch to the last chat in the group
+    if (group.chat_id === chatName) {
+        group.chat_id = '';
+        group.chat_metadata = {};
+
+        const newChatName = group.chats.length ? group.chats[group.chats.length - 1] : humanizedDateTime();
+        group.chat_id = newChatName;
+        group.chat_metadata = group.past_metadata[newChatName] || {};
+    }
+
+    await editGroup(groupId, true, true);
+    await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
+}
+
 export async function deleteGroupChat(groupId, chatId) {
     const group = groups.find(x => x.id === groupId);
 
@@ -2004,11 +2047,9 @@ export async function deleteGroupChat(groupId, chatId) {
  * @param {EventTarget} eventTarget Element that triggered the import
  */
 export async function importGroupChat(formData, eventTarget) {
-    const headers = getRequestHeaders();
-    delete headers['Content-Type'];
     const fetchResult = await fetch('/api/chats/group/import', {
         method: 'POST',
-        headers: headers,
+        headers: getRequestHeaders({ omitContentType: true }),
         body: formData,
         cache: 'no-cache',
     });

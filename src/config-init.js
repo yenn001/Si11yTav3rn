@@ -4,7 +4,7 @@ import yaml from 'yaml';
 import color from 'chalk';
 import _ from 'lodash';
 import { serverDirectory } from './server-directory.js';
-import { setConfigFilePath } from './util.js';
+import { keyToEnv, setConfigFilePath } from './util.js';
 
 const keyMigrationMap = [
     {
@@ -98,6 +98,32 @@ const keyMigrationMap = [
         migrate: () => void 0,
         remove: true,
     },
+    {
+        oldKey: 'autorun',
+        newKey: 'browserLaunch.enabled',
+        migrate: (value) => value,
+    },
+    {
+        oldKey: 'autorunHostname',
+        newKey: 'browserLaunch.hostname',
+        migrate: (value) => value,
+    },
+    {
+        oldKey: 'autorunPortOverride',
+        newKey: 'browserLaunch.port',
+        migrate: (value) => value,
+    },
+    {
+        oldKey: 'avoidLocalhost',
+        newKey: 'browserLaunch.avoidLocalhost',
+        migrate: (value) => value,
+    },
+    {
+        oldKey: 'extras.promptExpansionModel',
+        newKey: 'extras.promptExpansionModel',
+        migrate: () => void 0,
+        remove: true,
+    },
 ];
 
 /**
@@ -128,11 +154,30 @@ function getAllKeys(obj, prefix = '') {
 export function addMissingConfigValues(configPath) {
     try {
         const defaultConfig = yaml.parse(fs.readFileSync(path.join(serverDirectory, './default/config.yaml'), 'utf8'));
+
+        if (!fs.existsSync(configPath)) {
+            console.warn(color.yellow(`Warning: config.yaml not found at ${configPath}. Creating a new one with default values.`));
+            fs.writeFileSync(configPath, yaml.stringify(defaultConfig));
+            return;
+        }
+
         let config = yaml.parse(fs.readFileSync(configPath, 'utf8'));
 
         // Migrate old keys to new keys
         const migratedKeys = [];
         for (const { oldKey, newKey, migrate, remove } of keyMigrationMap) {
+            // Migrate environment variables
+            const oldEnvKey = keyToEnv(oldKey);
+            const newEnvKey = keyToEnv(newKey);
+            if (process.env[oldEnvKey] && !process.env[newEnvKey]) {
+                const oldValue = process.env[oldEnvKey];
+                const newValue = migrate(oldValue);
+                process.env[newEnvKey] = newValue;
+                delete process.env[oldEnvKey];
+                console.warn(color.yellow(`Warning: Using a deprecated environment variable: ${oldEnvKey}. Please use ${newEnvKey} instead.`));
+                console.log(`Redirecting ${color.blue(oldEnvKey)}=${oldValue} -> ${color.blue(newEnvKey)}=${newValue}`);
+            }
+
             if (_.has(config, oldKey)) {
                 if (remove) {
                     _.unset(config, oldKey);
@@ -192,6 +237,7 @@ export function addMissingConfigValues(configPath) {
  * @param {string} configPath Path to config.yaml
  */
 export function initConfig(configPath) {
+    console.log('Using config path:', color.green(configPath));
     setConfigFilePath(configPath);
     addMissingConfigValues(configPath);
 }

@@ -1,13 +1,13 @@
 import { DOMPurify } from '../lib.js';
 import { isMobile } from './RossAscends-mods.js';
-import { amount_gen, callPopup, eventSource, event_types, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
+import { amount_gen, eventSource, event_types, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 import { POPUP_TYPE, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { localizePagination, PAGINATION_TEMPLATE } from './utils.js';
+import { localizePagination, PAGINATION_TEMPLATE, textValueMatcher } from './utils.js';
 
 let mancerModels = [];
 let togetherModels = [];
@@ -29,14 +29,16 @@ const OPENROUTER_PROVIDERS = [
     'Alibaba',
     'Amazon Bedrock',
     'Anthropic',
+    'AtlasCloud',
     'Atoma',
     'Avian',
     'Azure',
-    'Cent-ML',
+    'BaseTen',
     'Cerebras',
     'Chutes',
     'Cloudflare',
     'Cohere',
+    'CrofAI',
     'Crusoe',
     'DeepInfra',
     'DeepSeek',
@@ -53,14 +55,15 @@ const OPENROUTER_PROVIDERS = [
     'InferenceNet',
     'Infermatic',
     'Inflection',
-    'InoCloud',
     'Kluster',
     'Lambda',
     'Liquid',
-    'Mancer',
     'Mancer 2',
+    'Meta',
     'Minimax',
     'Mistral',
+    'Moonshot AI',
+    'Morph',
     'NCompass',
     'Nebius',
     'NextBit',
@@ -73,6 +76,7 @@ const OPENROUTER_PROVIDERS = [
     'Phala',
     'SambaNova',
     'Stealth',
+    'Switchpoint',
     'Targon',
     'Together',
     'Ubicloud',
@@ -140,7 +144,7 @@ export async function loadTogetherAIModels(data) {
     $('#model_togetherai_select').empty();
     for (const model of data) {
         // Hey buddy, I think you've got the wrong door.
-        if (model.display_type === 'image') {
+        if (model.type === 'image') {
             continue;
         }
 
@@ -263,7 +267,7 @@ export async function loadOpenRouterModels(data) {
     for (const model of data) {
         const option = document.createElement('option');
         option.value = model.id;
-        option.text = model.id;
+        option.text = model.name;
         option.selected = model.id === textgen_settings.openrouter_model;
         $('#openrouter_model').append(option);
     }
@@ -761,7 +765,7 @@ async function downloadOllamaModel() {
 
         const html = `Enter a model tag, for example <code>llama2:latest</code>.<br>
         See <a target="_blank" href="https://ollama.ai/library">Library</a> for available models.`;
-        const name = await callPopup(html, 'input', '', { okButton: 'Download' });
+        const name = await callGenericPopup(html, POPUP_TYPE.INPUT, '', { okButton: 'Download' });
 
         if (!name) {
             return;
@@ -1001,6 +1005,7 @@ export function initTextGenModels() {
             searchInputCssClass: 'text_pole',
             width: '100%',
             templateResult: getOpenRouterModelTemplate,
+            matcher: textValueMatcher,
         });
         $('#vllm_model').select2({
             placeholder: t`Select a model`,

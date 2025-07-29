@@ -516,12 +516,14 @@ export class SlashCommandParser {
                     ?? []
                 ;
                 try {
-                    const qrApi = (await import('../extensions/quick-reply/index.js')).quickReplyApi;
-                    options.push(...qrApi.listSets()
-                        .map(set=>qrApi.listQuickReplies(set).map(qr=>`${set}.${qr}`))
-                        .flat()
-                        .map(qr=>new SlashCommandQuickReplyAutoCompleteOption(qr)),
-                    );
+                    if ('quickReplyApi' in globalThis) {
+                        const qrApi = globalThis.quickReplyApi;
+                        options.push(...qrApi.listSets()
+                            .map(set=>qrApi.listQuickReplies(set).map(qr=>`${set}.${qr}`))
+                            .flat()
+                            .map(qr=>new SlashCommandQuickReplyAutoCompleteOption(qr)),
+                        );
+                    }
                 } catch { /* empty */ }
                 const result = new AutoCompleteNameResult(
                     executor.unnamedArgumentList[0]?.value.toString(),
@@ -635,6 +637,7 @@ export class SlashCommandParser {
     replaceGetvar(value) {
         return value.replace(/{{(get(?:global)?var)::([^}]+)}}/gi, (match, cmd, name, idx) => {
             name = name.trim();
+            cmd = cmd.toLowerCase();
             const startIdx = this.index - value.length + idx;
             const endIdx = this.index - value.length + idx + match.length;
             // store pipe

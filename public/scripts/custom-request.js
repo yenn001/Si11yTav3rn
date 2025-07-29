@@ -1,5 +1,5 @@
 import { getPresetManager } from './preset-manager.js';
-import { extractMessageFromData, getGenerateUrl, getRequestHeaders } from '../script.js';
+import { extractJsonFromData, extractMessageFromData, getGenerateUrl, getRequestHeaders } from '../script.js';
 import { getTextGenServer } from './textgen-settings.js';
 import { extractReasoningFromData } from './reasoning.js';
 import { formatInstructModeChat, formatInstructModePrompt, getInstructStoppingSequences, names_behavior_types } from './instruct-mode.js';
@@ -279,9 +279,9 @@ export class TextCompletionService {
                                     instructPreset,
                                 );
                             } else { // e.g. "<|im_start|>assistant: Hello, my name is"
-                                const overridenInstructPreset = structuredClone(instructPreset);
-                                overridenInstructPreset.output_suffix = '';
-                                overridenInstructPreset.wrap = false;
+                                const overriddenInstructPreset = structuredClone(instructPreset);
+                                overriddenInstructPreset.output_suffix = '';
+                                overriddenInstructPreset.wrap = false;
                                 messageContent = formatInstructModeChat(
                                     message.role,
                                     message.content,
@@ -291,7 +291,7 @@ export class TextCompletionService {
                                     undefined,
                                     undefined,
                                     undefined,
-                                    overridenInstructPreset,
+                                    overriddenInstructPreset,
                                 );
                             }
                         }
@@ -467,7 +467,7 @@ export class ChatCompletionService {
                 return json;
             }
 
-            return {
+            const result = {
                 content: extractMessageFromData(json, this.TYPE),
                 reasoning: extractReasoningFromData(json, {
                     mainApi: this.TYPE,
@@ -475,6 +475,11 @@ export class ChatCompletionService {
                     ignoreShowThoughts: true,
                 }),
             };
+            // Try parse JSON
+            if (data.json_schema) {
+                result.content = JSON.parse(extractJsonFromData(json, { mainApi: this.TYPE, chatCompletionSource: data.chat_completion_source }));
+            }
+            return result;
         }
 
         if (!response.ok) {

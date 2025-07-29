@@ -12,7 +12,7 @@ import mime from 'mime-types';
 import { Jimp, JimpMime } from '../jimp.js';
 import storage from 'node-persist';
 
-import { AVATAR_WIDTH, AVATAR_HEIGHT } from '../constants.js';
+import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedISO8601DateTime, tryParse, extractFileFromZipBuffer, MemoryLimitedMap, getConfigValue, mutateJsonString } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
@@ -22,7 +22,8 @@ import { invalidateThumbnail } from './thumbnails.js';
 import { importRisuSprites } from './sprites.js';
 import { getUserDirectories } from '../users.js';
 import { getChatInfo } from './chats.js';
-const defaultAvatarPath = './public/img/ai4.png';
+import { ByafParser } from '../byaf.js';
+import cacheBuster from '../middleware/cacheBuster.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -243,7 +244,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             } catch (error) {
                 const message = Buffer.isBuffer(inputFile) ? 'Failed to read image buffer.' : `Failed to read image: ${inputFile}.`;
                 console.warn(message, 'Using a fallback image.', error);
-                return await fs.promises.readFile(defaultAvatarPath);
+                return await fs.promises.readFile(DEFAULT_AVATAR_PATH);
             }
         }
 
@@ -271,13 +272,18 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
  */
 
 /**
- * Parses an image buffer and applies crop if defined.
- * @param {Buffer} buffer Buffer of the image
+ * Applies avatar crop and resize operations to an image.
+ * I couldn't fix the type issue, so the first argument has {any} type.
+ * @param {object} jimp Jimp image instance
  * @param {Crop|undefined} [crop] Crop parameters
- * @returns {Promise<Buffer>} Image buffer
+ * @returns {Promise<Buffer>} Processed image buffer
  */
-async function parseImageBuffer(buffer, crop) {
-    const image = await Jimp.fromBuffer(buffer);
+export async function applyAvatarCropResize(jimp, crop) {
+    if (!(jimp instanceof Jimp)) {
+        throw new TypeError('Expected a Jimp instance');
+    }
+
+    const image = /** @type {InstanceType<typeof Jimp>} */ (jimp);
     let finalWidth = image.bitmap.width, finalHeight = image.bitmap.height;
 
     // Apply crop if defined
@@ -298,6 +304,17 @@ async function parseImageBuffer(buffer, crop) {
 }
 
 /**
+ * Parses an image buffer and applies crop if defined.
+ * @param {Buffer} buffer Buffer of the image
+ * @param {Crop|undefined} [crop] Crop parameters
+ * @returns {Promise<Buffer>} Image buffer
+ */
+async function parseImageBuffer(buffer, crop) {
+    const image = await Jimp.fromBuffer(buffer);
+    return await applyAvatarCropResize(image, crop);
+}
+
+/**
  * Reads an image file and applies crop if defined.
  * @param {string} imgPath Path to the image file
  * @param {Crop|undefined} crop Crop parameters
@@ -306,23 +323,7 @@ async function parseImageBuffer(buffer, crop) {
 async function tryReadImage(imgPath, crop) {
     try {
         const rawImg = await Jimp.read(imgPath);
-        let finalWidth = rawImg.bitmap.width, finalHeight = rawImg.bitmap.height;
-
-        // Apply crop if defined
-        if (typeof crop == 'object' && [crop.x, crop.y, crop.width, crop.height].every(x => typeof x === 'number')) {
-            rawImg.crop({ x: crop.x, y: crop.y, w: crop.width, h: crop.height });
-            // Apply standard resize if requested
-            if (crop.want_resize) {
-                finalWidth = AVATAR_WIDTH;
-                finalHeight = AVATAR_HEIGHT;
-            } else {
-                finalWidth = crop.width;
-                finalHeight = crop.height;
-            }
-        }
-
-        rawImg.cover({ w: finalWidth, h: finalHeight });
-        return await rawImg.getBuffer(JimpMime.png);
+        return await applyAvatarCropResize(rawImg, crop);
     }
     // If it's an unsupported type of image (APNG) - just read the file as buffer
     catch (error) {
@@ -708,6 +709,7 @@ function convertWorldInfoToCharacterBook(name, entries) {
                 match_character_depth_prompt: entry.matchCharacterDepthPrompt ?? false,
                 match_scenario: entry.matchScenario ?? false,
                 match_creator_notes: entry.matchCreatorNotes ?? false,
+                triggers: entry.triggers ?? [],
             },
         };
 
@@ -746,7 +748,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'creator': '',
         'tags': '',
     }, context.request.user.directories);
-    const result = await writeCharacterData(defaultAvatarPath, JSON.stringify(char), fileName, context.request);
+    const result = await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request);
     return result ? fileName : '';
 }
 
@@ -775,7 +777,7 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
     }
 
     /** @type {string|Buffer} */
-    let avatar = defaultAvatarPath;
+    let avatar = DEFAULT_AVATAR_PATH;
     const assets = _.get(card, 'data.assets');
     if (Array.isArray(assets) && assets.length) {
         for (const asset of assets.filter(x => x.type === 'icon' && typeof x.uri === 'string')) {
@@ -793,6 +795,18 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
     card.name = sanitize(card.name);
     const fileName = preservedFileName || getPngName(card.name, request.user.directories);
     const result = await writeCharacterData(avatar, JSON.stringify(card), fileName, request);
+    return result ? fileName : '';
+}
+
+async function importFromByaf(uploadPath, { request }, preservedFileName) {
+    const data = (await fsPromises.readFile(uploadPath)).buffer;
+    await fsPromises.unlink(uploadPath);
+    console.info('Importing from BYAF');
+
+    const byafData = await new ByafParser(data).parse();
+    const card = readFromV2(byafData.card);
+    const fileName = preservedFileName || getPngName(card.name, request.user.directories);
+    const result = await writeCharacterData(byafData.image, JSON.stringify(card), fileName, request);
     return result ? fileName : '';
 }
 
@@ -817,7 +831,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         jsonData['create_date'] = humanizedISO8601DateTime();
         const pngName = preservedFileName || getPngName(jsonData.data?.name || jsonData.name, request.user.directories);
         const char = JSON.stringify(jsonData);
-        const result = await writeCharacterData(defaultAvatarPath, char, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, char, pngName, request);
         return result ? pngName : '';
     } else if (jsonData.name !== undefined) {
         console.info('Importing from v1 json');
@@ -843,7 +857,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         };
         char = convertToV2(char, request.user.directories);
         let charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(defaultAvatarPath, charJSON, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
         return result ? pngName : '';
     } else if (jsonData.char_name !== undefined) {//json Pygmalion notepad
         console.info('Importing from gradio json');
@@ -869,7 +883,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         };
         char = convertToV2(char, request.user.directories);
         const charJSON = JSON.stringify(char);
-        const result = await writeCharacterData(defaultAvatarPath, charJSON, pngName, request);
+        const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
         return result ? pngName : '';
     }
 
@@ -936,7 +950,7 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
 
 export const router = express.Router();
 
-router.post('/create', async function (request, response) {
+router.post('/create', getFileNameValidationFunction('file_name'), async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
 
@@ -950,7 +964,7 @@ router.post('/create', async function (request, response) {
         if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
 
         if (!request.file) {
-            await writeCharacterData(defaultAvatarPath, char, internalName, request);
+            await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request);
             return response.send(avatarName);
         } else {
             const crop = tryParse(request.query.crop);
@@ -1043,13 +1057,12 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
             fs.unlinkSync(newAvatarPath);
 
             // Bust cache to reload the new avatar
-            response.setHeader('Clear-Site-Data', '"cache"');
+            cacheBuster.bust(request, response);
         }
 
         return response.sendStatus(200);
-    }
-    catch {
-        console.error('An error occured, character edit invalidated.');
+    } catch (err) {
+        console.error('An error occurred, character edit invalidated.', err);
     }
 });
 
@@ -1095,7 +1108,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         await writeCharacterData(avatarPath, newCharJSON, targetFile, request);
         return response.sendStatus(200);
     } catch (err) {
-        console.error('An error occured, character edit invalidated.', err);
+        console.error('An error occurred, character edit invalidated.', err);
     }
 });
 
@@ -1200,7 +1213,8 @@ router.post('/all', async function (request, response) {
         return response.send(data);
     } catch (err) {
         console.error(err);
-        response.sendStatus(500);
+        const isRangeError = err instanceof RangeError;
+        response.status(500).send({ overflow: isRangeError, error: true });
     }
 });
 
@@ -1301,6 +1315,7 @@ router.post('/import', async function (request, response) {
         'json': importFromJson,
         'png': importFromPng,
         'charx': importFromCharX,
+        'byaf': importFromByaf,
     };
 
     try {
